@@ -1,0 +1,155 @@
+module vit_212_top #(
+    parameter PM_WIDTH = 4,
+    parameter DEPTH    = 8
+)(
+    input  wire        clk,
+    input  wire        rst_n,
+
+    input  wire        i_valid,
+    input  wire [1:0]  i_data,
+    input  wire        i_last,
+
+    output wire        o_valid,
+    output wire        o_data,
+    output wire        o_last
+);
+
+    // ====================================================
+    // 1. Dữ liệu đệm (Pipeline Alignment)
+    // ====================================================
+    reg [1:0] i_data_reg;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) 
+            i_data_reg <= 2'b0;
+        else if (i_valid) 
+            i_data_reg <= i_data;
+    end
+
+    // ====================================================
+    // 2. Control Wires
+    // ====================================================
+    wire pm_we;
+    wire smu_we;
+   
+    wire smu_re;
+    wire tb_en;
+
+    wire bank_sel;
+    wire load_state;
+
+    wire [2:0] fw_idx;
+    wire [2:0] tb_idx;
+
+    // ====================================================
+    // 3. Datapath Wires
+    // ====================================================
+    wire [1:0] min_state;
+
+    wire [1:0] bm00_0, bm00_1;
+    wire [1:0] bm01_0, bm01_1;
+    wire [1:0] bm10_0, bm10_1;
+    wire [1:0] bm11_0, bm11_1;
+
+    wire [PM_WIDTH-1:0] pm_00, pm_01, pm_10, pm_11;
+    wire [PM_WIDTH-1:0] pm_next_00, pm_next_01;
+    wire [PM_WIDTH-1:0] pm_next_10, pm_next_11;
+
+    wire surv_00, surv_01, surv_10, surv_11;
+    wire [3:0] surv_bus = {surv_11, surv_10, surv_01, surv_00};
+
+    wire [3:0] surv_out;
+
+    // ====================================================
+    // 4. Khởi tạo các Sub-modules
+    // ====================================================
+
+    // BMU nhận dữ liệu đã được làm trễ (i_data_reg)
+    bmu u_bmu (
+        .i_data(i_data_reg),
+        .bm00_0(bm00_0), .bm00_1(bm00_1),
+        .bm01_0(bm01_0), .bm01_1(bm01_1),
+        .bm10_0(bm10_0), .bm10_1(bm10_1),
+        .bm11_0(bm11_0), .bm11_1(bm11_1)
+    );
+
+    // ACSU (Mạch tổ hợp)
+    acsu #(.PM_WIDTH(PM_WIDTH)) u_acsu (
+        .pm_00(pm_00), .pm_01(pm_01),
+        .pm_10(pm_10), .pm_11(pm_11),
+
+        .bm00_0(bm00_0), .bm00_1(bm00_1),
+        .bm01_0(bm01_0), .bm01_1(bm01_1),
+        .bm10_0(bm10_0), .bm10_1(bm10_1),
+        .bm11_0(bm11_0), .bm11_1(bm11_1),
+
+        .pm_next_00(pm_next_00), .pm_next_01(pm_next_01),
+        .pm_next_10(pm_next_10), .pm_next_11(pm_next_11),
+
+        .surv_00(surv_00), .surv_01(surv_01),
+        .surv_10(surv_10), .surv_11(surv_11)
+    );
+
+    // PMU (Mạch tuần tự - Lưu Path Metric)
+    pmu #(.PM_WIDTH(PM_WIDTH)) u_pmu (
+        .clk(clk),
+        .rst_n(rst_n),
+        .pm_we(pm_we),
+
+        .pm_next_00(pm_next_00), .pm_next_01(pm_next_01),
+        .pm_next_10(pm_next_10), .pm_next_11(pm_next_11),
+
+        .pm_00(pm_00), .pm_01(pm_01),
+        .pm_10(pm_10), .pm_11(pm_11),
+
+        .min_state(min_state)
+    );
+
+    // SMU 
+    smu #(.DEPTH(DEPTH)) u_smu (
+        .clk(clk),
+        .rst_n(rst_n),
+        .smu_we(smu_we),
+        .bank_sel(bank_sel),
+        .fw_idx(fw_idx),
+        .surv_bit(surv_bus),
+        .smu_re(smu_re),
+        .read_bank(~bank_sel), 
+        .tb_idx(tb_idx),
+        .surv_out(surv_out)
+    );
+
+    // TBU 
+    tbu u_tbu (
+        .clk(clk),
+        .rst_n(rst_n),
+        .tb_en(tb_en),
+        .load_state(load_state),
+        .start_state(min_state),
+        .surv_bits(surv_out),
+        .o_data(o_data)
+    );
+
+    // CTRL (Mạch tuần tự FSM điều khiển tổng thể)
+    // Nhận i_valid trực tiếp để tính toán trước 1 chu kỳ clock
+    ctrl #(.DEPTH(DEPTH)) u_ctrl (
+        .clk(clk),
+        .rst_n(rst_n),
+
+        .i_valid(i_valid),
+        .i_last(i_last),
+
+        .pm_we(pm_we),
+        .smu_we(smu_we),
+        .smu_re(smu_re),
+        .tb_en(tb_en),
+        .bank_sel(bank_sel),
+        .load_state(load_state),
+
+        .fw_idx(fw_idx),
+        .tb_idx(tb_idx),
+
+        .o_valid(o_valid),
+        .o_last(o_last)
+    );
+
+endmodule
